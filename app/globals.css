@@ -149,6 +149,9 @@
   .badge-cancelled {
     @apply badge bg-status-cancelled/10 text-status-cancelled border border-status-cancelled/20;
   }
+  .badge-muted {
+    @apply badge bg-white/5 text-white/60 border border-white/10;
+  }
 
   /* Step indicators */
   .step-active {

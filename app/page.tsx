@@ -211,13 +211,13 @@ function MechanicsVisualization() {
             </div>
           </div>
 
-          {/* Visual: Threshold chart mockup */}
+          {/* Visual: Threshold chart (illustrative example) */}
           <div className="card p-8">
             <div className="flex items-center justify-between mb-6">
               <span className="label">Rainfall Index — Nairobi (KEN-NRB-001)</span>
-              <span className="badge-active">
-                <span className="w-1.5 h-1.5 bg-status-active rounded-full" />
-                Live
+              <span className="badge-muted">
+                <span className="w-1.5 h-1.5 bg-white/40 rounded-full" />
+                Illustrative
               </span>
             </div>
 
