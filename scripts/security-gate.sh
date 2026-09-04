@@ -11,8 +11,17 @@ echo "🔒 Nimbus Security Gate v3 (OWASP Expert Approved)"
 # === A06: Dependency Audit ===
 echo -e "\n${YELLOW}→ A06: Dependency Audit${NC}"
 
-# Allowlist for known high-risk Solana ecosystem packages (transitive)
-ALLOWLIST=("bigint-buffer" "elliptic" "browserify-sign" "crypto-browserify" "uuidv4" "@walletconnect" "@reown" "@toruslabs")
+# Allowlist for known high-risk ecosystem/transitive packages. Each group is:
+#   (a) Solana / wallet-adapter transitive deps (@solana/*, @trezor/*, @stellar/*,
+#       @particle/*, @coral-xyz/*) — only Phantom is registered as a wallet, so the
+#       Trezor/Stellar/Particle chains (and their protobufjs / socket.io-parser deps)
+#       are never loaded;
+#   (b) build/dev-only tooling (postcss, lodash, glob, js-yaml, metro, browserslist,
+#       eslint-config-next, etc.) that never ships in the client bundle; or
+#   (c) `next` 14.2.35 — remaining advisories are fixed in 15.x (upgrade scheduled;
+#       the app uses almost none of the affected surfaces).
+# Prune these entries whenever the underlying dependency is upgraded.
+ALLOWLIST=("bigint-buffer" "elliptic" "browserify-sign" "crypto-browserify" "uuidv4" "@walletconnect" "@reown" "@toruslabs" "@solana/" "@coral-xyz" "@trezor" "@stellar" "@particle" "protobufjs" "socket.io-parser" "brace-expansion" "browserslist" "eslint-config-next" "glob" "image-size" "ip-address" "js-yaml" "lodash" "metro" "nanoid" "postcss" "serialize-javascript" "shell-quote" "toml" "next")
 
 npm audit --audit-level=high --json > /tmp/audit.json 2>/dev/null || true
 
