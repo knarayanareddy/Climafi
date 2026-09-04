@@ -48,6 +48,7 @@ sed -i "s/CLiMaFi1111111111111111111111111111111111111/${NEW_ID}/g" \
   offchain/monitoring.ts \
   offchain/oracle-aggregator.ts \
   offchain/policy-monitor.ts \
+  scripts/deploy.ts \
   .env.example
 ```
 
