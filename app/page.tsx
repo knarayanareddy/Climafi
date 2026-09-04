@@ -5,20 +5,43 @@ import Nav from '../components/Nav'
 import { Cloud, Zap, Shield, BarChart3, Droplets, ArrowRight, CheckCircle2, Database, Lock, Timer, Vote } from 'lucide-react'
 
 function RainParticles() {
+  // Deterministic pseudo-random (seeded) so SSR + hydration render identical
+  // particle positions — avoids React hydration mismatch warnings and prevents
+  // the particles from re-randomizing on every client render.
+  let seed = 0x9e3779b9
+  const rand = () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+
+  const particles = Array.from({ length: 40 }, () => {
+    const duration = 1.5 + rand() * 2
+    return {
+      left: rand() * 100,
+      top: rand() * 100,
+      height: 20 + rand() * 40,
+      delay: rand() * 3,
+      duration,
+      opacity: 0.3 + rand() * 0.4,
+    }
+  })
+
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
-      {Array.from({ length: 40 }).map((_, i) => (
+      {particles.map((p, i) => (
         <div
           key={i}
           className="absolute w-px bg-gradient-to-b from-transparent via-nimbus-400/20 to-transparent"
           style={{
-            left: `${Math.random() * 100}%`,
-            top: `${Math.random() * 100}%`,
-            height: `${20 + Math.random() * 40}px`,
-            animationDelay: `${Math.random() * 3}s`,
-            animationDuration: `${1.5 + Math.random() * 2}s`,
-            animation: `rain ${1.5 + Math.random() * 2}s linear infinite`,
-            opacity: 0.3 + Math.random() * 0.4,
+            left: `${p.left}%`,
+            top: `${p.top}%`,
+            height: `${p.height}px`,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${p.duration}s`,
+            animation: `rain ${p.duration}s linear infinite`,
+            opacity: p.opacity,
           }}
         />
       ))}
@@ -79,7 +102,7 @@ function HeroSection() {
             </div>
             <div className="flex items-center gap-2 text-sm text-white/40">
               <CheckCircle2 className="w-4 h-4 text-nimbus-400" />
-              Sub-second finality
+              Deterministic payouts
             </div>
             <div className="flex items-center gap-2 text-sm text-white/40">
               <CheckCircle2 className="w-4 h-4 text-nimbus-400" />
@@ -240,14 +263,14 @@ function MechanicsVisualization() {
 
 function TrustSection() {
   const stats = [
-    { value: '55', label: 'On-chain require! checks', icon: Lock },
+    { value: '83', label: 'On-chain safety checks', icon: Lock },
     { value: 'Ed25519', label: 'Quote signature verification', icon: Shield },
     { value: 'M-of-N', label: 'Multisig governance', icon: Vote },
-    { value: '<400ms', label: 'Settlement finality', icon: Zap },
+    { value: 'Auto', label: 'Deterministic settlement', icon: Zap },
   ]
 
   const features = [
-    { name: 'Switchboard Oracles', desc: 'Decentralized weather data from multiple sources' },
+    { name: 'Oracle-verified rainfall', desc: 'Daily Open-Meteo data, validated on-chain at settlement' },
     { name: 'OWASP Hardened', desc: 'Full security audit with validated deserialization' },
     { name: 'USDC Native', desc: 'All premiums and payouts in stablecoin' },
     { name: 'Open Source', desc: 'Fully verifiable on-chain program code' },
