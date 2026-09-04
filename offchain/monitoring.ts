@@ -15,7 +15,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import { NimbusAlerting, AlertPayload } from './alerting';
 
-const PROGRAM_ID = new PublicKey("CliMaFi1111111111111111111111111111111111111");
+const PROGRAM_ID = new PublicKey("CLiMaFi1111111111111111111111111111111111111");
 const UTILIZATION_WARNING = 0.80;
 const UTILIZATION_CRITICAL = 0.90;
 

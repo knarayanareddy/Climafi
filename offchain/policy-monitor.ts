@@ -16,6 +16,7 @@ import { Connection, Keypair, PublicKey, ComputeBudgetProgram, Transaction } fro
 import { Program, AnchorProvider, Wallet, BN } from '@coral-xyz/anchor';
 import * as fs from 'fs';
 import { NimbusAlerting, AlertPayload } from './alerting';
+import { loadProgramIdl } from './load-idl';
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
@@ -33,7 +34,7 @@ function deriveAta(owner: PublicKey, mint: PublicKey): PublicKey {
   return ata;
 }
 
-const PROGRAM_ID = new PublicKey("CliMaFi1111111111111111111111111111111111111");
+const PROGRAM_ID = new PublicKey("CLiMaFi1111111111111111111111111111111111111");
 const SETTLEMENT_COMPUTE_UNITS = 400_000;
 
 // Policy status enum (matches on-chain)
@@ -76,7 +77,7 @@ export class PolicyMonitor {
       commitment: 'confirmed',
       preflightCommitment: 'confirmed',
     });
-    this.program = new Program({} as any, PROGRAM_ID, provider);
+    this.program = new Program(loadProgramIdl(), PROGRAM_ID, provider);
     this.alerting = new NimbusAlerting(options?.slackWebhook, options?.pagerDutyKey);
   }
 
@@ -159,7 +160,7 @@ export class PolicyMonitor {
     // We filter by: status == Active (byte at offset 8+8+32+8+32+8+1+8+8+1+1+8+8 = 133)
     const accounts = await this.connection.getProgramAccounts(PROGRAM_ID, {
       filters: [
-        { dataSize: 197 + 8 }, // Policy::LEN = 197, +8 for discriminator... actually Policy::LEN already includes discriminator
+        { dataSize: 197 }, // Policy::LEN = 197 (includes the 8-byte discriminator)
       ],
     });
 
@@ -249,6 +250,15 @@ export class PolicyMonitor {
   private async settlePolicy(policy: ParsedPolicy) {
     console.log(`[PolicyMonitor] Settling policy #${policy.policyId}...`);
 
+    // NOTE: settle_policy requires the policy OWNER to be the transaction signer
+    // (C-01 fix on-chain). This keeper can therefore only settle policies whose
+    // owner is this wallet's keypair. For policies owned by other users, settlement
+    // is done by the owner through the /settle page (which signs as the owner).
+    if (policy.owner.toBase58() !== this.wallet.publicKey.toBase58()) {
+      console.log(`[PolicyMonitor] Skipping policy #${policy.policyId}: owner != keeper (owner-signed settlement)`);
+      return;
+    }
+
     const numDays = (policy.windowEndUnix - policy.windowStartUnix) / 86400;
     const remainingAccounts = [];
 
@@ -278,7 +288,7 @@ export class PolicyMonitor {
     if (!configAccount) {
       throw new Error('Config account not found');
     }
-    // USDC mint is at offset 49 in GlobalConfig (disc:8 + admin:32 + paused:1 + usdc_mint starts at 41)
+    // USDC mint layout in GlobalConfig: disc(8) + admin(32) + paused(1) → usdc_mint starts at offset 41
     const usdcMint = new PublicKey(configAccount.data.subarray(41, 41 + 32));
 
     const poolVaultUsdcAta = deriveAta(vaultAuth, usdcMint);
@@ -324,7 +334,7 @@ export class PolicyMonitor {
 // CLI entrypoint
 if (require.main === module) {
   const rpcUrl = process.env.RPC_URL || 'https://api.devnet.solana.com';
-  const keypairPath = process.env.ORACLE_KEYPAIR_PATH || './oracle-keypair.json';
+  const keypairPath = process.env.ORACLE_KEYPAIR_PATH || './keys/oracle.json';
 
   const monitor = new PolicyMonitor(rpcUrl, keypairPath, {
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS || '60000'),

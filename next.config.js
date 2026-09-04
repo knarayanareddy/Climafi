@@ -11,8 +11,9 @@ const cspDirectives = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
   "font-src 'self'",
-  // Solana RPC endpoints + WebSocket connections
-  "connect-src 'self' https://*.solana.com https://api.mainnet-beta.solana.com https://api.devnet.solana.com wss://*.solana.com",
+  // Solana RPC endpoints + WebSocket connections.
+  // In dev we also allow the local validator so `npm run dev` can point at `anchor localnet`.
+  `connect-src 'self' https://*.solana.com https://api.mainnet-beta.solana.com https://api.devnet.solana.com wss://*.solana.com${isDev ? ' http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*' : ''}`,
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "outDir": "./.offchain-build"
+  },
+  "include": ["./offchain/**/*.ts", "./lib/**/*.ts", "./scripts/**/*.ts"],
+  "exclude": ["offchain/switchboard-oracle.ts"]
+}

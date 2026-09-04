@@ -2,23 +2,19 @@
 
 import { useState, useEffect, useCallback, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { useWallet } from '@solana/wallet-adapter-react'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
 import { useWalletModal } from '@solana/wallet-adapter-react-ui'
 import Nav from '../../components/Nav'
+import TransactionStatus from '../../components/TransactionStatus'
+import type { TxState } from '../../components/TransactionStatus'
+import { getGlobalConfig, createBuyPolicyTransaction, ensureQuoteNonceInitialized } from '../../lib/nimbus'
+import type { SignedQuote } from '../../lib/nimbus'
+import { REGIONS, getRegionById } from '../../lib/regions'
 import {
   Shield, Cloud, Droplets, ArrowRight, ArrowLeft, Timer, Check,
   MapPin, CloudRain, CloudSun, BarChart2, TrendingUp, Calendar,
   DollarSign, AlertTriangle, Zap, Clock, ChevronRight, Info
 } from 'lucide-react'
-
-const REGIONS = [
-  { id: 'KEN-NRB-001', name: 'Nairobi, Kenya', country: 'Kenya', lat: -1.29, lon: 36.82 },
-  { id: 'IND-MUM-001', name: 'Mumbai, India', country: 'India', lat: 19.08, lon: 72.88 },
-  { id: 'PHL-MNL-001', name: 'Manila, Philippines', country: 'Philippines', lat: 14.60, lon: 120.98 },
-  { id: 'BRA-SPO-001', name: 'São Paulo, Brazil', country: 'Brazil', lat: -23.55, lon: -46.63 },
-  { id: 'ETH-ADD-001', name: 'Addis Ababa, Ethiopia', country: 'Ethiopia', lat: 9.01, lon: 38.75 },
-  { id: 'BGD-DHK-001', name: 'Dhaka, Bangladesh', country: 'Bangladesh', lat: 23.81, lon: 90.41 },
-]
 
 const INDEX_METHODS = [
   {
@@ -92,7 +88,9 @@ function StepIndicator({ currentStep }: { currentStep: number }) {
 function BuyFlowContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
-  const { connected } = useWallet()
+  const wallet = useWallet()
+  const { connected, publicKey, sendTransaction } = wallet
+  const { connection } = useConnection()
   const { setVisible: setWalletVisible } = useWalletModal()
 
   const [step, setStep] = useState(1)
@@ -105,6 +103,9 @@ function BuyFlowContent() {
   const [premium, setPremium] = useState<number | null>(null)
   const [quoteCountdown, setQuoteCountdown] = useState<number | null>(null)
   const [isCalculating, setIsCalculating] = useState(false)
+  const [txState, setTxState] = useState<TxState>('idle')
+  const [txMessage, setTxMessage] = useState('')
+  const [txSignature, setTxSignature] = useState<string | undefined>(undefined)
 
   const syncURL = useCallback(() => {
     const params = new URLSearchParams()
@@ -139,7 +140,7 @@ function BuyFlowContent() {
     try {
       const res = await fetch(`/api/quotes/calculate?region=${region}&direction=${direction}&days=${days}&threshold=${threshold}&payout=${payout}`)
       const data = await res.json()
-      setPremium(data.premium || 23.63)
+      setPremium(data.premium ?? data.premiumAmount ?? 23.63)
       setQuoteCountdown(120)
       setStep(6)
     } catch {
@@ -148,6 +149,99 @@ function BuyFlowContent() {
       setStep(6)
     } finally {
       setIsCalculating(false)
+    }
+  }
+
+  const handlePurchase = async () => {
+    if (!publicKey) {
+      setWalletVisible(true)
+      return
+    }
+    if (premium === null) {
+      setStep(5)
+      return
+    }
+
+    setTxState('signing')
+    setTxMessage('Requesting a signed quote…')
+    setTxSignature(undefined)
+
+    try {
+      const DAY = 86400
+      const nowSecs = Math.floor(Date.now() / 1000)
+      const windowStartUnix = (Math.floor(nowSecs / DAY) + 1) * DAY // next midnight UTC
+      const windowEndUnix = windowStartUnix + days * DAY
+
+      const regionObj = getRegionById(region)
+      if (!regionObj) throw new Error(`Unknown region: ${region}`)
+
+      // On-chain amounts are u64 base units (6 decimals); the quote API works in
+      // whole USDC dollars, so convert before signing.
+      const payoutBase = Math.round(payout * 1_000_000)
+      const premiumBase = Math.round(premium * 1_000_000)
+
+      const signRes = await fetch('/api/quotes/sign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          poolId: 1,
+          regionId: regionObj.regionId,
+          peril: 0, // Rainfall
+          windowStartUnix,
+          windowEndUnix,
+          payoutAmount: payoutBase,
+          premiumAmount: premiumBase,
+          thresholdMm: threshold,
+          direction,
+          indexMethod: indexMethod === 'Sum' ? 0 : indexMethod === 'Mean' ? 1 : 2,
+        }),
+      })
+
+      const signData: SignedQuote = await signRes.json()
+      if (!signRes.ok) {
+        throw new Error((signData as unknown as { error?: string }).error || 'Failed to sign quote')
+      }
+
+      const config = await getGlobalConfig(connection)
+
+      // The per-signer quote-nonce account must exist before buy_policy reads it,
+      // and (due to the on-chain reentrancy guard) must be created in its own
+      // transaction — never bundled with buy_policy.
+      const initSig = await ensureQuoteNonceInitialized(
+        connection,
+        { publicKey },
+        async (initTx) => {
+          setTxMessage('Creating nonce account…')
+          const s = await sendTransaction(initTx, connection)
+          const latest = await connection.getLatestBlockhash('confirmed')
+          await connection.confirmTransaction({ signature: s, ...latest }, 'confirmed')
+          return s
+        },
+      )
+      void initSig
+
+      const tx = await createBuyPolicyTransaction(
+        connection,
+        { publicKey },
+        signData,
+        { usdcMint: config.usdcMint, treasuryUsdcAta: config.treasuryUsdcAta },
+      )
+
+      setTxMessage('Waiting for wallet approval…')
+      const sig = await sendTransaction(tx, connection)
+
+      setTxSignature(sig)
+      setTxState('confirming')
+      setTxMessage('Confirming on-chain…')
+      const latest = await connection.getLatestBlockhash('confirmed')
+      await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed')
+
+      setTxState('success')
+      setTxMessage('Policy purchased and active on-chain.')
+    } catch (err) {
+      console.error('Purchase failed:', err)
+      setTxState('error')
+      setTxMessage(err instanceof Error ? err.message : 'Transaction failed')
     }
   }
 
@@ -310,7 +404,7 @@ function BuyFlowContent() {
                 <input
                   type="range"
                   min={7}
-                  max={90}
+                  max={31}
                   value={days}
                   onChange={(e) => setDays(Number(e.target.value))}
                   className="flex-1 accent-nimbus-400 h-2 bg-surface-3 rounded-full cursor-pointer"
@@ -508,7 +602,7 @@ function BuyFlowContent() {
                   </div>
                   <div className="text-right">
                     <div className="label">Oracle Source</div>
-                    <div className="text-sm text-white/50 mt-1">Switchboard · Open-Meteo</div>
+                    <div className="text-sm text-white/50 mt-1">Open-Meteo · permissioned publisher</div>
                   </div>
                 </div>
               </div>
@@ -530,10 +624,11 @@ function BuyFlowContent() {
               </button>
               {connected ? (
                 <button
-                  disabled={quoteCountdown === 0}
-                  className="btn-primary inline-flex items-center gap-2"
+                  onClick={handlePurchase}
+                  disabled={quoteCountdown === 0 || txState === 'signing' || txState === 'confirming'}
+                  className="btn-primary inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Confirm &amp; Purchase
+                  {txState === 'signing' || txState === 'confirming' ? 'Purchasing…' : 'Confirm & Purchase'}
                   <ArrowRight className="w-4 h-4" />
                 </button>
               ) : (
@@ -545,6 +640,15 @@ function BuyFlowContent() {
                   <ArrowRight className="w-4 h-4" />
                 </button>
               )}
+            </div>
+
+            <div className="mt-6">
+              <TransactionStatus
+                state={txState}
+                message={txMessage}
+                txSignature={txSignature}
+                onDismiss={() => setTxState('idle')}
+              />
             </div>
           </div>
         )}

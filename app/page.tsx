@@ -42,7 +42,7 @@ function HeroSection() {
           {/* Eyebrow */}
           <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-nimbus-500/10 border border-nimbus-400/20 rounded-full mb-8 animate-fade-in">
             <div className="w-1.5 h-1.5 bg-nimbus-400 rounded-full animate-pulse-soft" />
-            <span className="text-xs font-medium text-nimbus-300">Live on Solana Devnet</span>
+            <span className="text-xs font-medium text-nimbus-300">Parametric Cover on Solana</span>
           </div>
 
           {/* Headline */}
@@ -67,7 +67,7 @@ function HeroSection() {
             </Link>
             <Link href="/pools" className="btn-secondary inline-flex items-center justify-center gap-2 text-base">
               <Droplets className="w-4 h-4" />
-              Provide Liquidity
+              View Pools
             </Link>
           </div>
 
@@ -83,7 +83,7 @@ function HeroSection() {
             </div>
             <div className="flex items-center gap-2 text-sm text-white/40">
               <CheckCircle2 className="w-4 h-4 text-nimbus-400" />
-              Switchboard oracles
+              Oracle-verified indices
             </div>
           </div>
         </div>
@@ -317,7 +317,7 @@ function CTASection() {
                 <ArrowRight className="w-4 h-4" />
               </Link>
               <Link href="/pools" className="btn-secondary inline-flex items-center justify-center gap-2 text-base">
-                Earn Yield as LP
+                Explore Pools
               </Link>
             </div>
           </div>
@@ -348,7 +348,7 @@ function Footer() {
             <Link href="/governance" className="hover:text-white/60 transition-colors">
               Governance
             </Link>
-            <span>Solana Devnet</span>
+            <span>Solana</span>
           </div>
 
           {/* Legal */}

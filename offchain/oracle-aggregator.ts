@@ -8,8 +8,9 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { Program, AnchorProvider, Wallet, BN } from '@coral-xyz/anchor';
 import fetch from 'node-fetch';
 import * as fs from 'fs';
+import { loadProgramIdl } from './load-idl';
 
-const PROGRAM_ID = new PublicKey("CliMaFi1111111111111111111111111111111111111");
+const PROGRAM_ID = new PublicKey("CLiMaFi1111111111111111111111111111111111111");
 
 interface WeatherResponse {
   daily: {
@@ -33,10 +34,14 @@ interface RegionBounds {
   centerLon: number;
 }
 
+// Region ids MUST match lib/regions.ts so the u64 ids agree with the frontend.
 const REGION_REGISTRY: Map<number, RegionBounds> = new Map([
   [1, { name: 'Nairobi', latMin: -1.5, latMax: -1.0, lonMin: 36.5, lonMax: 37.0, centerLat: -1.2921, centerLon: 36.8219 }],
-  [2, { name: 'Mumbai', latMin: 18.8, latMax: 19.3, lonMin: 72.7, lonMax: 73.0, centerLat: 19.0760, centerLon: 72.8777 }],
+  [2, { name: 'Mumbai', latMin: 18.8, latMax: 19.3, lonMin: 72.7, lonMax: 73.0, centerLat: 19.076, centerLon: 72.8777 }],
   [3, { name: 'Manila', latMin: 14.4, latMax: 14.7, lonMin: 120.9, lonMax: 121.1, centerLat: 14.5995, centerLon: 120.9842 }],
+  [4, { name: 'São Paulo', latMin: -24.0, latMax: -23.0, lonMin: -47.0, lonMax: -46.0, centerLat: -23.55, centerLon: -46.63 }],
+  [5, { name: 'Addis Ababa', latMin: 8.5, latMax: 9.5, lonMin: 38.2, lonMax: 39.2, centerLat: 9.01, centerLon: 38.75 }],
+  [6, { name: 'Dhaka', latMin: 23.3, latMax: 24.3, lonMin: 89.9, lonMax: 90.9, centerLat: 23.81, centerLon: 90.41 }],
 ]);
 
 export class OracleAggregator {
@@ -51,7 +56,7 @@ export class OracleAggregator {
 
     const wallet = new Wallet(this.oracleKeypair);
     const provider = new AnchorProvider(this.connection, wallet, {});
-    this.program = new Program({} as any, PROGRAM_ID, provider);
+    this.program = new Program(loadProgramIdl(), PROGRAM_ID, provider);
   }
 
   /**
@@ -162,3 +167,35 @@ export class OracleAggregator {
 // const aggregator = new OracleAggregator(rpcUrl, keypairPath);
 // const rainfall = await aggregator.fetchDailyRainfallByRegion(1, "2026-06-21");
 // await aggregator.publishDailySnapshot(1, 1750464000, rainfall);
+
+// ==================== CLI ====================
+// Posts one daily observation for a region to the Nimbus program.
+//
+//   npm run oracle                              # today's rainfall for region 1
+//   REGION_ID=2 DATE=2026-09-03 npm run oracle  # specific region + date
+//
+// Env:
+//   RPC_URL              (default https://api.devnet.solana.com)
+//   ORACLE_KEYPAIR_PATH  (default ./keys/oracle.json — must be the configured oracle_authority)
+//   REGION_ID            (default 1)
+//   DATE                 YYYY-MM-DD (default: today UTC)
+if (require.main === module) {
+  const rpcUrl = process.env.RPC_URL || 'https://api.devnet.solana.com';
+  const keypairPath = process.env.ORACLE_KEYPAIR_PATH || './keys/oracle.json';
+  const regionId = parseInt(process.env.REGION_ID || '1', 10);
+  const date = process.env.DATE || new Date().toISOString().slice(0, 10);
+
+  (async () => {
+    if (!fs.existsSync(keypairPath)) {
+      throw new Error(`Oracle keypair not found at ${keypairPath}. Run the deploy script first (npm run deploy).`);
+    }
+    const aggregator = new OracleAggregator(rpcUrl, keypairPath);
+    const dayStartUnix = Math.floor(Date.parse(`${date}T00:00:00Z`) / 1000);
+    const rainfall = await aggregator.fetchDailyRainfallByRegion(regionId, date);
+    await aggregator.publishDailySnapshot(regionId, dayStartUnix, rainfall);
+    console.log(`[Oracle] region ${regionId} on ${date}: ${rainfall / 100} mm (${rainfall} mm*100)`);
+  })().catch((err) => {
+    console.error('[Oracle] publish failed:', err);
+    process.exit(1);
+  });
+}
