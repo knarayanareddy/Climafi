@@ -1,0 +1,17 @@
+# cargo-audit configuration (project root: programs/nimbus/.cargo/audit.toml)
+#
+# Advisories ignored here are transitive dependencies whose vulnerable code paths
+# this on-chain program does not exercise. Remove each entry when the transitive
+# chain is bumped (see Cargo.lock for locked versions).
+
+[advisories]
+ignore = [
+    # curve25519-dalek: timing variability in Scalar29/52::sub (transitive via
+    # solana-program; no scalar operations are performed in this program's code path)
+    "RUSTSEC-2024-0344",
+    # ed25519-dalek: keypair (de)serialization oracle (transitive; patched in 2.0)
+    "RUSTSEC-2022-0093",
+    # crossbeam-epoch: NULL-pointer deref in fmt::Pointer impl (transitive via rayon;
+    # not used by the single-threaded BPF on-chain runtime). Patched in >= 0.9.20.
+    "RUSTSEC-2026-0204",
+]

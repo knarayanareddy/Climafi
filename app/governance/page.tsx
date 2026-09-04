@@ -288,7 +288,7 @@ function GovernanceContent() {
         {/* Proposals */}
         <div className="mb-4">
           <div className="heading-sm text-white mb-1">Proposals</div>
-          <p className="text-sm text-white/30">Active, queued, and recent proposals.</p>
+          <p className="text-sm text-white/30">Sample proposals — the multisig config above is read live on-chain.</p>
         </div>
 
         <div className="space-y-4">

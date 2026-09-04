@@ -1,289 +1,181 @@
 'use client'
 
-import { useWallet } from '@solana/wallet-adapter-react'
+import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
 import { useWalletModal } from '@solana/wallet-adapter-react-ui'
 import Nav from '../../components/Nav'
+import { PROGRAM_ID } from '../../lib/nimbus'
+import { deserializePolicy, type PolicyData } from '../../lib/deserialize'
+import { getRegionByU64 } from '../../lib/regions'
 import {
   Wallet, Shield, CloudSun, CloudRain, Clock, CheckCircle2,
-  AlertTriangle, XCircle, ArrowRight, BarChart2, TrendingUp,
-  Calendar, Zap, ExternalLink
+  AlertTriangle, ArrowRight, ExternalLink
 } from 'lucide-react'
 
-type PolicyStatus = 'active' | 'triggered' | 'settled' | 'cancelled'
+const POLICY_ACCOUNT_SIZE = 197 // Policy::LEN (includes 8-byte discriminator)
 
-interface Policy {
-  id: string
-  region: string
-  regionName: string
-  peril: 'Drought' | 'Flood'
-  indexMethod: string
-  threshold: number
-  direction: 'LT' | 'GT'
-  daysTotal: number
-  daysRemaining: number
-  currentIndex: number
-  maxPayout: number
-  premiumPaid: number
-  status: PolicyStatus
-  startDate: string
-  endDate: string
-  oracleSource: string
+const STATUS_LABEL: Record<number, { label: string; className: string }> = {
+  0: { label: 'Active', className: 'text-nimbus-300' },
+  1: { label: 'Cancelled', className: 'text-white/40' },
+  2: { label: 'Settled · Paid', className: 'text-status-active' },
+  3: { label: 'Settled · Expired', className: 'text-white/40' },
 }
 
-const DEMO_POLICIES: Policy[] = [
-  {
-    id: 'PLcy...8xKm',
-    region: 'KEN-NRB-001',
-    regionName: 'Nairobi, Kenya',
-    peril: 'Drought',
-    indexMethod: 'Sum',
-    threshold: 80,
-    direction: 'LT',
-    daysTotal: 14,
-    daysRemaining: 6,
-    currentIndex: 42.3,
-    maxPayout: 500,
-    premiumPaid: 23.63,
-    status: 'active',
-    startDate: '2026-06-15T00:00:00Z',
-    endDate: '2026-06-29T00:00:00Z',
-    oracleSource: 'Switchboard · Open-Meteo',
-  },
-  {
-    id: 'PLcy...3fRw',
-    region: 'IND-MUM-001',
-    regionName: 'Mumbai, India',
-    peril: 'Flood',
-    indexMethod: 'Max',
-    threshold: 150,
-    direction: 'GT',
-    daysTotal: 30,
-    daysRemaining: 0,
-    currentIndex: 187.5,
-    maxPayout: 2000,
-    premiumPaid: 112.40,
-    status: 'triggered',
-    startDate: '2026-05-20T00:00:00Z',
-    endDate: '2026-06-19T00:00:00Z',
-    oracleSource: 'Switchboard · NOAA',
-  },
-  {
-    id: 'PLcy...9mTz',
-    region: 'PHL-MNL-001',
-    regionName: 'Manila, Philippines',
-    peril: 'Flood',
-    indexMethod: 'Mean',
-    threshold: 25,
-    direction: 'GT',
-    daysTotal: 14,
-    daysRemaining: 0,
-    currentIndex: 18.2,
-    maxPayout: 1000,
-    premiumPaid: 45.00,
-    status: 'settled',
-    startDate: '2026-05-01T00:00:00Z',
-    endDate: '2026-05-15T00:00:00Z',
-    oracleSource: 'Switchboard · Open-Meteo',
-  },
-]
-
-function formatDualTime(isoDate: string) {
-  const d = new Date(isoDate)
-  const utc = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
-  const local = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-  const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop()?.replace('_', ' ') || 'Local'
-  return { utc: `${utc} UTC`, local: `${local} ${localTz}` }
+interface PolicyRow {
+  address: string
+  data: PolicyData
 }
 
-const STATUS_CONFIG = {
-  active: { icon: Clock, color: 'text-status-active', bg: 'bg-status-active/10', border: 'border-status-active/20', label: 'Active' },
-  triggered: { icon: Zap, color: 'text-status-triggered', bg: 'bg-status-triggered/10', border: 'border-status-triggered/20', label: 'Triggered' },
-  settled: { icon: CheckCircle2, color: 'text-status-settled', bg: 'bg-status-settled/10', border: 'border-status-settled/20', label: 'Settled' },
-  cancelled: { icon: XCircle, color: 'text-status-cancelled', bg: 'bg-status-cancelled/10', border: 'border-status-cancelled/20', label: 'Cancelled' },
-}
-
-function PolicyCard({ policy }: { policy: Policy }) {
-  const status = STATUS_CONFIG[policy.status]
-  const StatusIcon = status.icon
-  const startTime = formatDualTime(policy.startDate)
-  const endTime = formatDualTime(policy.endDate)
-
-  const indexPercent = policy.direction === 'LT'
-    ? Math.min(100, (policy.currentIndex / policy.threshold) * 100)
-    : Math.min(100, (policy.currentIndex / (policy.threshold * 1.5)) * 100)
-  const thresholdPercent = policy.direction === 'LT'
-    ? 100
-    : (policy.threshold / (policy.threshold * 1.5)) * 100
-  const isTriggered = policy.direction === 'LT'
-    ? policy.currentIndex < policy.threshold
-    : policy.currentIndex > policy.threshold
-
-  return (
-    <div className="card p-0 overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between p-5 pb-0">
-        <div className="flex items-center gap-3">
-          {policy.peril === 'Drought' ? (
-            <CloudSun className="w-5 h-5 text-status-triggered" />
-          ) : (
-            <CloudRain className="w-5 h-5 text-nimbus-400" />
-          )}
-          <div>
-            <div className="text-sm font-medium text-white">{policy.regionName}</div>
-            <div className="text-xs text-white/30 font-mono">{policy.id}</div>
-          </div>
-        </div>
-        <div className={`badge ${status.bg} ${status.color} ${status.border}`}>
-          <StatusIcon className="w-3 h-3" />
-          {status.label}
-        </div>
-      </div>
-
-      {/* Details grid */}
-      <div className="grid grid-cols-3 gap-3 p-5">
-        <div>
-          <div className="label">Peril</div>
-          <div className="text-sm text-white mt-1">{policy.peril}</div>
-        </div>
-        <div>
-          <div className="label">Index</div>
-          <div className="text-sm text-white mt-1 font-mono">{policy.indexMethod}</div>
-        </div>
-        <div>
-          <div className="label">Direction</div>
-          <div className="text-sm text-white mt-1">{policy.direction === 'LT' ? '< ' : '> '}{policy.threshold}mm</div>
-        </div>
-      </div>
-
-      {/* Index progress bar */}
-      <div className="px-5 pb-4">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-white/40">Current Index vs. Threshold</span>
-          <span className="text-xs text-white/40">Oracle: {policy.oracleSource}</span>
-        </div>
-        <div className="relative h-3 bg-surface-3 rounded-full overflow-hidden">
-          <div
-            className={`absolute left-0 top-0 h-full rounded-full transition-all duration-500 ${
-              isTriggered ? 'bg-status-triggered' : 'bg-nimbus-400'
-            }`}
-            style={{ width: `${Math.min(100, indexPercent)}%` }}
-          />
-          {/* Threshold marker */}
-          <div
-            className="absolute top-0 w-0.5 h-full bg-white/60"
-            style={{ left: `${thresholdPercent}%` }}
-          />
-        </div>
-        <div className="flex items-center justify-between mt-1">
-          <span className={`text-xs font-mono ${isTriggered ? 'text-status-triggered' : 'text-nimbus-300'}`}>
-            {policy.currentIndex}mm
-          </span>
-          <span className="text-xs text-white/30 font-mono">{policy.threshold}mm</span>
-        </div>
-      </div>
-
-      {/* Time & Payout */}
-      <div className="border-t border-white/[0.04] p-5 grid grid-cols-2 gap-4">
-        <div>
-          <div className="label">Window</div>
-          <div className="text-xs text-white mt-1">{startTime.utc} — {endTime.utc}</div>
-          <div className="text-xs text-white/30">{startTime.local} — {endTime.local}</div>
-          {policy.daysRemaining > 0 && (
-            <div className="text-xs text-nimbus-300 mt-1">{policy.daysRemaining} days remaining</div>
-          )}
-        </div>
-        <div className="text-right">
-          <div className="label">Payout / Premium</div>
-          <div className="text-sm font-mono text-white mt-1">{policy.maxPayout.toLocaleString()} USDC</div>
-          <div className="text-xs text-white/30">Paid: {policy.premiumPaid.toFixed(2)} USDC</div>
-        </div>
-      </div>
-
-      {/* Actions */}
-      {(policy.status === 'triggered' || (policy.status === 'active' && policy.daysRemaining === 0)) && (
-        <div className="border-t border-white/[0.04] p-4">
-          <button className="btn-primary w-full inline-flex items-center justify-center gap-2 py-3">
-            <Zap className="w-4 h-4" />
-            Settle Policy
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function EmptyState() {
-  const { setVisible } = useWalletModal()
-
-  return (
-    <div className="card p-12 text-center max-w-lg mx-auto">
-      <div className="w-16 h-16 bg-nimbus-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
-        <Shield className="w-8 h-8 text-nimbus-400/40" />
-      </div>
-      <h3 className="heading-sm text-white mb-2">No policies yet</h3>
-      <p className="body-md mb-6">
-        Connect your Phantom, Backpack, or Solflare wallet to view your parametric coverage policies.
-      </p>
-      <button onClick={() => setVisible(true)} className="btn-primary inline-flex items-center gap-2 mx-auto">
-        <Wallet className="w-4 h-4" />
-        Connect Wallet
-      </button>
-    </div>
-  )
+function fmtUsdc(baseUnits: number): string {
+  return (baseUnits / 1_000_000).toLocaleString('en-US', { maximumFractionDigits: 2 })
 }
 
 export default function PortfolioPage() {
-  const { connected } = useWallet()
+  const { publicKey, connected } = useWallet()
+  const { setVisible } = useWalletModal()
+  const { connection } = useConnection()
+
+  const [policies, setPolicies] = useState<PolicyRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadPolicies = useCallback(async () => {
+    if (!publicKey) return
+    setLoading(true)
+    setError(null)
+    try {
+      const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
+        filters: [{ dataSize: POLICY_ACCOUNT_SIZE }],
+      })
+      const rows: PolicyRow[] = []
+      for (const { pubkey, account } of accounts) {
+        try {
+          const data = deserializePolicy(account.data, account.owner)
+          if (data.owner.equals(publicKey)) {
+            rows.push({ address: pubkey.toBase58(), data })
+          }
+        } catch {
+          // not a Policy account (or malformed) — skip
+        }
+      }
+      rows.sort((a, b) => b.data.createdAtUnix - a.data.createdAtUnix)
+      setPolicies(rows)
+    } catch (err) {
+      console.error('Failed to load policies:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load policies')
+    } finally {
+      setLoading(false)
+    }
+  }, [connection, publicKey])
+
+  useEffect(() => {
+    loadPolicies()
+  }, [loadPolicies])
 
   return (
     <main className="min-h-screen bg-surface-0 noise">
       <Nav />
       <div className="section py-8 lg:py-12">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="heading-md text-white mb-2">Portfolio</h1>
-            <p className="body-md">Track your active parametric coverage policies and settlement status.</p>
+        <div className="max-w-4xl mx-auto">
+          <div className="mb-8">
+            <h1 className="heading-md text-white mb-2">Your Portfolio</h1>
+            <p className="body-md">On-chain policies owned by your connected wallet.</p>
           </div>
-          {connected && (
-            <a href="/buy" className="btn-primary hidden sm:inline-flex items-center gap-2">
-              <Shield className="w-4 h-4" />
-              New Policy
-            </a>
-          )}
-        </div>
 
-        {!connected ? (
-          <EmptyState />
-        ) : (
-          <>
-            {/* Stats bar */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-              <div className="card py-5 text-center">
-                <div className="data-value text-nimbus-300">3</div>
-                <div className="data-label">Total Policies</div>
-              </div>
-              <div className="card py-5 text-center">
-                <div className="data-value text-status-active">1</div>
-                <div className="data-label">Active</div>
-              </div>
-              <div className="card py-5 text-center">
-                <div className="data-value">3,500 <span className="text-sm text-white/30">USDC</span></div>
-                <div className="data-label">Total Coverage</div>
-              </div>
-              <div className="card py-5 text-center">
-                <div className="data-value">181.03 <span className="text-sm text-white/30">USDC</span></div>
-                <div className="data-label">Premium Spent</div>
-              </div>
+          {!connected ? (
+            <div className="card p-10 text-center">
+              <Wallet className="w-10 h-10 text-nimbus-400 mx-auto mb-4" />
+              <p className="body-md mb-6">Connect your wallet to view your coverage.</p>
+              <button onClick={() => setVisible(true)} className="btn-primary inline-flex items-center gap-2">
+                Connect Wallet <ArrowRight className="w-4 h-4" />
+              </button>
             </div>
-
-            {/* Policy list */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {DEMO_POLICIES.map((policy) => (
-                <PolicyCard key={policy.id} policy={policy} />
+          ) : loading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-24 bg-surface-2 rounded-2xl animate-pulse" />
               ))}
             </div>
-          </>
-        )}
+          ) : error ? (
+            <div className="card p-6 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-status-danger mt-0.5" />
+              <div>
+                <div className="text-sm font-medium text-white">Couldn&apos;t load policies</div>
+                <div className="text-xs text-white/40 mt-1">{error}</div>
+              </div>
+            </div>
+          ) : policies.length === 0 ? (
+            <div className="card p-10 text-center">
+              <Shield className="w-10 h-10 text-nimbus-400 mx-auto mb-4" />
+              <p className="body-md mb-6">No policies yet. Buy rainfall coverage to get started.</p>
+              <Link href="/buy" className="btn-primary inline-flex items-center gap-2">
+                Buy Cover <ArrowRight className="w-4 h-4" />
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {policies.map(({ address, data }) => {
+                const region = getRegionByU64(data.regionId)
+                const status = STATUS_LABEL[data.status] ?? { label: `Status ${data.status}`, className: 'text-white/40' }
+                const isDrought = data.direction === 0
+                return (
+                  <div key={address} className="card p-5">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        {isDrought ? (
+                          <CloudSun className="w-6 h-6 text-status-triggered mt-0.5" />
+                        ) : (
+                          <CloudRain className="w-6 h-6 text-nimbus-400 mt-0.5" />
+                        )}
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-white">{region?.name ?? `Region #${data.regionId}`}</span>
+                            <span className="badge-active"><span className="w-1.5 h-1.5 bg-current rounded-full" />{status.label}</span>
+                          </div>
+                          <div className="text-xs text-white/30 font-mono mt-0.5">
+                            Policy #{data.policyId} · {isDrought ? 'Drought' : 'Flood'} · {['Sum', 'Mean', 'Max'][data.indexMethod]}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm text-white/60">
+                          Payout <span className="text-white font-semibold">{fmtUsdc(data.payoutAmount)} USDC</span>
+                        </div>
+                        <div className="text-xs text-white/30">Premium {fmtUsdc(data.premiumAmount)} USDC</div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 pt-4 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-3 text-xs text-white/40">
+                      <div className="flex items-center gap-4">
+                        <span className="inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5" />
+                          {new Date(data.windowStartUnix * 1000).toLocaleDateString()} → {new Date(data.windowEndUnix * 1000).toLocaleDateString()}
+                        </span>
+                        <span>Threshold {isDrought ? '<' : '≥'} {(data.threshold / 100).toFixed(0)}mm</span>
+                        {data.triggered && <span className="inline-flex items-center gap-1 text-status-active"><CheckCircle2 className="w-3.5 h-3.5" /> Triggered</span>}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {data.status === 0 && (
+                          <Link href={`/settle?policy=${address}`} className="btn-ghost inline-flex items-center gap-1">
+                            Settle <ArrowRight className="w-3.5 h-3.5" />
+                          </Link>
+                        )}
+                        <a
+                          href={`https://explorer.solana.com/account/${address}?cluster=devnet`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 hover:text-white/70"
+                        >
+                          View <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </main>
   )

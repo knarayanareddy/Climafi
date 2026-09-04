@@ -30,12 +30,12 @@ export default function Nav() {
 
     const fetchBalance = async () => {
       try {
+        const usdcMint = process.env.NEXT_PUBLIC_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
         const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
           programId: new (await import('@solana/web3.js')).PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
         })
         const usdcAccount = tokenAccounts.value.find(
-          (ta) => ta.account.data.parsed.info.mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' ||
-                  ta.account.data.parsed.info.tokenAmount.decimals === 6
+          (ta) => ta.account.data.parsed.info.mint === usdcMint
         )
         if (usdcAccount) {
           setUsdcBalance(usdcAccount.account.data.parsed.info.tokenAmount.uiAmount)

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import nacl from 'tweetnacl'
 import bs58 from 'bs58'
 import { PersistentRateLimiter } from '../../../../offchain/rate-limiter'
+import { serializeQuote } from '../../../../lib/quote'
 
 // Lazy initialization to avoid failing at build time
 let _quoteSigner: nacl.SignKeyPair | null = null
@@ -26,23 +27,8 @@ function getRateLimiter(): PersistentRateLimiter {
   return _rateLimiter
 }
 
-/**
- * Write a u64 as 8-byte little-endian buffer (matches Borsh serialization)
- */
-function writeU64LE(value: bigint): Buffer {
-  const buf = Buffer.alloc(8)
-  buf.writeBigUInt64LE(value)
-  return buf
-}
-
-/**
- * Write an i64 as 8-byte little-endian buffer (matches Borsh serialization)
- */
-function writeI64LE(value: bigint): Buffer {
-  const buf = Buffer.alloc(8)
-  buf.writeBigInt64LE(value)
-  return buf
-}
+const DAY_SECS = 86400
+const MAX_WINDOW_DAYS = 31
 
 /**
  * M-05 fix: Validate and sanitize request body
@@ -71,13 +57,15 @@ function validateQuoteRequest(body: any): { valid: boolean; error?: string } {
     return { valid: false, error: 'windowEndUnix must be after windowStartUnix' }
   }
 
-  if (windowStart < now) {
-    return { valid: false, error: 'windowStartUnix must be in the future' }
+  const durationDays = (windowEnd - windowStart) / DAY_SECS
+  if (durationDays < 1 || durationDays > MAX_WINDOW_DAYS) {
+    return { valid: false, error: `Policy duration must be between 1 and ${MAX_WINDOW_DAYS} days` }
   }
 
-  const durationDays = (windowEnd - windowStart) / 86400
-  if (durationDays < 1 || durationDays > 31) {
-    return { valid: false, error: 'Policy duration must be between 1 and 31 days' }
+  // Windows must start in the future, unless the signer explicitly opts into
+  // backdated quotes for the live settle demo (QUOTE_SIGNER_ALLOW_PAST=true).
+  if (windowStart < now && process.env.QUOTE_SIGNER_ALLOW_PAST !== 'true') {
+    return { valid: false, error: 'windowStartUnix must be in the future' }
   }
 
   if (Number(body.payoutAmount) === 0) {
@@ -88,8 +76,15 @@ function validateQuoteRequest(body: any): { valid: boolean; error?: string } {
     return { valid: false, error: 'premiumAmount must be greater than 0' }
   }
 
-  if (body.direction && !['LT', 'GT'].includes(body.direction)) {
+  if (body.direction !== undefined && !['LT', 'GT'].includes(body.direction)) {
     return { valid: false, error: 'direction must be "LT" or "GT"' }
+  }
+
+  if (body.indexMethod !== undefined) {
+    const m = Number(body.indexMethod)
+    if (![0, 1, 2].includes(m)) {
+      return { valid: false, error: 'indexMethod must be 0 (Sum), 1 (Mean), or 2 (Max)' }
+    }
   }
 
   return { valid: true }
@@ -97,17 +92,14 @@ function validateQuoteRequest(body: any): { valid: boolean; error?: string } {
 
 /**
  * L-04 fix: Extract real client IP from trusted proxy headers
- * In production, configure this based on your reverse proxy setup
  */
 function getClientIp(request: Request): string {
-  // Prefer Cloudflare/Vercel headers (set by the edge, not spoofable)
   const cfIp = request.headers.get('cf-connecting-ip')
   if (cfIp) return cfIp
 
   const vercelIp = request.headers.get('x-real-ip')
   if (vercelIp) return vercelIp
 
-  // Fallback: take the LAST entry in x-forwarded-for (closest proxy)
   const xff = request.headers.get('x-forwarded-for')
   if (xff) {
     const parts = xff.split(',').map(s => s.trim())
@@ -132,66 +124,56 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  // M-05 fix: validate all inputs
   const validation = validateQuoteRequest(body)
   if (!validation.valid) {
     return NextResponse.json({ error: validation.error }, { status: 400 })
   }
 
+  const now = Math.floor(Date.now() / 1000)
+  const nonce = BigInt(Date.now())
+  const policyId = body.policyId !== undefined && body.policyId !== null
+    ? BigInt(body.policyId)
+    : nonce
+
   const quote = {
-    policy_id: BigInt(body.policyId || Date.now()),
-    pool_id: BigInt(body.poolId || 1),
-    region_id: BigInt(body.regionId || 0),
-    peril: 0, // Rainfall
-    window_start_unix: BigInt(Math.floor(Number(body.windowStartUnix))),
-    window_end_unix: BigInt(Math.floor(Number(body.windowEndUnix))),
-    index_method: 0, // Sum
-    direction: body.direction === 'GT' ? 1 : 0,
-    threshold: BigInt(Math.floor(Number(body.thresholdMm) * 100)),
-    payout_amount: BigInt(Math.floor(Number(body.payoutAmount))),
-    premium_amount: BigInt(Math.floor(Number(body.premiumAmount))),
-    quote_expiry_unix: BigInt(Math.floor(Date.now() / 1000) + 120),
-    nonce: BigInt(Date.now()),
+    policyId,
+    poolId: BigInt(body.poolId ?? 1),
+    regionId: BigInt(body.regionId ?? 0),
+    peril: (body.peril ?? 0) as 0 | 1 | 2, // 0 = Rainfall
+    windowStartUnix: BigInt(Math.floor(Number(body.windowStartUnix))),
+    windowEndUnix: BigInt(Math.floor(Number(body.windowEndUnix))),
+    indexMethod: (Number(body.indexMethod ?? 0)) as 0 | 1 | 2, // 0 = Sum
+    direction: (body.direction === 'GT' ? 1 : 0) as 0 | 1,
+    threshold: BigInt(Math.floor(Number(body.thresholdMm) * 100)), // mm -> mm*100 (SCALE_RAIN_MM)
+    payoutAmount: BigInt(Math.floor(Number(body.payoutAmount))),
+    premiumAmount: BigInt(Math.floor(Number(body.premiumAmount))),
+    quoteExpiryUnix: BigInt(now + 120),
+    nonce,
   }
 
-  // Borsh-compatible serialization: all integers as little-endian,
-  // enums as single u8 byte. This matches Anchor's try_to_vec() output.
-  const message = Buffer.concat([
-    writeU64LE(quote.policy_id),
-    writeU64LE(quote.pool_id),
-    writeU64LE(quote.region_id),
-    Buffer.from([quote.peril]),           // Peril enum (u8)
-    writeI64LE(quote.window_start_unix),
-    writeI64LE(quote.window_end_unix),
-    Buffer.from([quote.index_method]),    // IndexMethod enum (u8)
-    Buffer.from([quote.direction]),       // TriggerDirection enum (u8)
-    writeI64LE(quote.threshold),
-    writeU64LE(quote.payout_amount),
-    writeU64LE(quote.premium_amount),
-    writeI64LE(quote.quote_expiry_unix),
-    writeU64LE(quote.nonce),
-  ])
-
+  // Borsh-compatible message (must equal on-chain Quote::try_to_vec())
+  const message = serializeQuote(quote)
   const signature = nacl.sign.detached(message, getQuoteSigner().secretKey)
 
   return NextResponse.json({
     quote: {
-      policy_id: quote.policy_id.toString(),
-      pool_id: quote.pool_id.toString(),
-      region_id: quote.region_id.toString(),
-      peril: { rainfall: {} },
-      window_start_unix: quote.window_start_unix.toString(),
-      window_end_unix: quote.window_end_unix.toString(),
-      index_method: { sum: {} },
-      direction: quote.direction === 1 ? { greaterThan: {} } : { lessThan: {} },
+      policyId: quote.policyId.toString(),
+      poolId: quote.poolId.toString(),
+      regionId: quote.regionId.toString(),
+      peril: quote.peril,
+      windowStartUnix: quote.windowStartUnix.toString(),
+      windowEndUnix: quote.windowEndUnix.toString(),
+      indexMethod: quote.indexMethod,
+      direction: quote.direction,
       threshold: quote.threshold.toString(),
-      payout_amount: quote.payout_amount.toString(),
-      premium_amount: quote.premium_amount.toString(),
-      quote_expiry_unix: quote.quote_expiry_unix.toString(),
+      payoutAmount: quote.payoutAmount.toString(),
+      premiumAmount: quote.premiumAmount.toString(),
+      quoteExpiryUnix: quote.quoteExpiryUnix.toString(),
       nonce: quote.nonce.toString(),
     },
     signature: Buffer.from(signature).toString('base64'),
     quoteSignerPubkey: bs58.encode(getQuoteSigner().publicKey),
-    expiresUnix: Number(quote.quote_expiry_unix),
+    message: message.toString('hex'),
+    expiresUnix: Number(quote.quoteExpiryUnix),
   })
 }

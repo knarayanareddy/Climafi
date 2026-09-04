@@ -3,7 +3,7 @@ import { BN } from '@coral-xyz/anchor'
 import { PROGRAM_ID } from './nimbus'
 
 // Anchor discriminators: sha256("account:<Name>")[0..8]
-const DISCRIMINATORS = {
+export const DISCRIMINATORS = {
   GlobalConfig:        [149, 8, 156, 202, 160, 252, 176, 217],
   MultisigConfig:      [44, 62, 172, 225, 246, 3, 178, 33],
   MultisigProposal:    [13, 15, 144, 55, 252, 164, 83, 208],

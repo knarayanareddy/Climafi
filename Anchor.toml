@@ -1,0 +1,25 @@
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+# Single source of truth for the program ID. Must match:
+#   - programs/nimbus/src/lib.rs declare_id!
+#   - lib/nimbus.ts PROGRAM_ID
+#   - offchain/* PROGRAM_ID constants
+nimbus = "CLiMaFi1111111111111111111111111111111111111"
+
+[programs.devnet]
+nimbus = "CLiMaFi1111111111111111111111111111111111111"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+# NOTE: requires devDependencies `ts-mocha`, `mocha`, `chai`, `@types/chai`
+# (the repo currently lists only @types/mocha — add these before running `anchor test`).
+test = "ts-mocha -p ./tests/tsconfig.json -t 1000000 tests/**/*.ts"

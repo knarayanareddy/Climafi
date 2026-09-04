@@ -329,90 +329,34 @@ function BuyFlowContent() {
         return
       }
 
-      const { quote, signature, quoteSignerPubkey } = signedQuotePayload
-      const signatureBytes = Buffer.from(signature, 'base64')
-      const signerPubkeyBytes = bs58.decode(quoteSignerPubkey)
+      const quote = signedQuotePayload.quote
 
-      // Fetch global config from chain to retrieve treasuryUsdcAta
-      let treasuryUsdcAta = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') // Fallback
-      try {
-        const configPda = getConfigPda()
-        const configAccountInfo = await connection.getAccountInfo(configPda)
-        if (configAccountInfo) {
-          const configParsed = deserializeGlobalConfig(configAccountInfo.data, PROGRAM_ID)
-          treasuryUsdcAta = configParsed.treasuryUsdcAta
-        }
-      } catch (err) {
-        console.warn('Failed to retrieve treasury Usdc Ata from GlobalConfig, using fallback.', err)
+      // Fetch global config to get usdc_mint + treasury ATA
+      const configPda = getConfigPda()
+      const configAccountInfo = await connection.getAccountInfo(configPda)
+      if (!configAccountInfo) {
+        throw new Error('Nimbus config not found — is the program deployed on this network?')
       }
+      const configParsed = deserializeGlobalConfig(configAccountInfo.data, PROGRAM_ID)
 
-      // Re-serialize quote object exactly as Borsh does in the backend to pass to Ed25519 Program
-      const directionVal = quote.direction.greaterThan ? 1 : 0
-      const indexMethodVal = quote.index_method.sum ? 0 : quote.index_method.mean ? 1 : 2
-      const quoteSerialized = Buffer.concat([
-        writeU64LE(BigInt(quote.policy_id)),
-        writeU64LE(BigInt(quote.pool_id)),
-        writeU64LE(BigInt(quote.region_id)),
-        Buffer.from([0]), // peril enum Rainfall = 0
-        writeI64LE(BigInt(quote.window_start_unix)),
-        writeI64LE(BigInt(quote.window_end_unix)),
-        Buffer.from([indexMethodVal]),
-        Buffer.from([directionVal]),
-        writeI64LE(BigInt(quote.threshold)),
-        writeU64LE(BigInt(quote.payout_amount)),
-        writeU64LE(BigInt(quote.premium_amount)),
-        writeI64LE(BigInt(quote.quote_expiry_unix)),
-        writeU64LE(BigInt(quote.nonce)),
-      ])
-
-      // Build Ed25519 verify instruction
-      const ed25519Ix = Ed25519Program.createInstructionWithPublicKey({
-        publicKey: signerPubkeyBytes,
-        message: quoteSerialized,
-        signature: signatureBytes,
-      })
-
-      // Build buyPolicy instruction via Anchor helper
-      const rawQuote = {
-        policyId: new BN(quote.policy_id),
-        poolId: new BN(quote.pool_id),
-        regionId: new BN(quote.region_id),
-        peril: { rainfall: {} },
-        windowStartUnix: new BN(quote.window_start_unix),
-        windowEndUnix: new BN(quote.window_end_unix),
-        indexMethod: quote.index_method.sum ? { sum: {} } : quote.index_method.mean ? { mean: {} } : { max: {} },
-        direction: quote.direction.greaterThan ? { greaterThan: {} } : { lessThan: {} },
-        threshold: new BN(quote.threshold),
-        payoutAmount: new BN(quote.payout_amount),
-        premiumAmount: new BN(quote.premium_amount),
-        quoteExpiryUnix: new BN(quote.quote_expiry_unix),
-        nonce: new BN(quote.nonce),
-      }
-
-      const buyPolicyTx = await createBuyPolicyTransaction(
+      // Build the full buy transaction (compute budget + Ed25519 verify + buyPolicy)
+      const transaction = await createBuyPolicyTransaction(
         connection,
         { publicKey },
-        rawQuote,
-        signatureBytes,
-        0, // Ed25519 instruction is at index 0
-        treasuryUsdcAta
+        signedQuotePayload,
+        { usdcMint: configParsed.usdcMint, treasuryUsdcAta: configParsed.treasuryUsdcAta },
       )
 
-      // Add Ed25519 instruction at index 0 and buyPolicy at index 1
-      const transaction = new Transaction()
-      transaction.add(ed25519Ix)
-      transaction.add(buyPolicyTx.instructions[0])
-
       const signatureTx = await sendTransaction(transaction, connection)
-      
+
       // Wait for confirmation
       await connection.confirmTransaction(signatureTx, 'confirmed')
 
       // Save success to local storage as well
       try {
         const newPolicy = {
-          id: quote.policy_id.toString(),
-          policyId: quote.policy_id.toString(),
+          id: quote.policyId.toString(),
+          policyId: quote.policyId.toString(),
           region: region?.name || 'Nairobi',
           peril: peril,
           index: indexMethod,
